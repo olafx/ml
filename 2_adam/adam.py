@@ -115,8 +115,6 @@ class Adam(torch.optim.Optimizer):
       denom = exp_avg_sq.sqrt()/(-bias_corr_2**.5*lr/bias_corr_1)-eps*lr/bias_corr_1
       param.data += exp_avg/denom
 
-adam_ = Adam(model.parameters())
-
 '''
 Training.
 '''
