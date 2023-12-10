@@ -11,6 +11,12 @@ import torchvision
 PREPROCESS_NORMALIZE = True
 BATCH_SIZE_TRAINING = 64
 BATCH_SIZE_TESTING = 512
+N_EPOCHS = 2
+
+MODEL_LSTM_HIDDEN_SIZE = 32
+MODEL_DENSE_SIZE = 32
+MODEL_DROPOUT_1_PROB = .25
+MODEL_DROPOUT_2_PROB = .5
 
 transformer = [torchvision.transforms.ToTensor()]
 if PREPROCESS_NORMALIZE:
@@ -24,12 +30,6 @@ loader_test = torch.utils.data.DataLoader(data_test, batch_size=BATCH_SIZE_TESTI
 '''
 A RNN using 2 orthogonal LSTMs.
 '''
-
-LSTM_HIDDEN_SIZE = 32
-DENSE_SIZE = 32
-DROPOUT_1_PROB = .25
-DROPOUT_2_PROB = .5
-
 class Model(torch.nn.Module):
 
   def __init__(self, lstm_hidden_size, dense_size, dropout_1_prob, dropout_2_prob):
@@ -69,58 +69,55 @@ class Model(torch.nn.Module):
     x = torch.nn.functional.log_softmax(x, dim=1)
     return x
 
-model = Model(LSTM_HIDDEN_SIZE, DENSE_SIZE, DROPOUT_1_PROB, DROPOUT_2_PROB)
+model = Model(MODEL_LSTM_HIDDEN_SIZE, MODEL_DENSE_SIZE, MODEL_DROPOUT_1_PROB, MODEL_DROPOUT_2_PROB)
 
 '''
-The Adam optimizer, implemented as a user-defined torch optimizer.
+The Adam optimizer, implemented as a user-defined torch optimizer, closely
+following torch's implementation.
 '''
-
 class Adam(torch.optim.Optimizer):
 
   def __init__(self, params, lr=.001, betas=(.9, .999), eps=1e-8):
-    self.exp_avgs = []
-    self.exp_avg_sqs = []
-    self.t = 0
-    defaults = dict(lr=lr, betas=betas, eps=eps)
-    super().__init__(params, defaults)
+    super().__init__(params, defaults={'lr':lr, 'betas':betas, 'eps':eps})
 
   def step(self):
-    self.t += 1
-    params_with_grad = []
-    params = self.param_groups[0]['params'] # From the superclass.
-    # The trainable parameter tensors are the ones that are not `None` after the
-    # backwards pass. Getting these every step, just like torch.
-    for param in params:
-      if param.grad is not None:
-        params_with_grad.append(param)
-    # Initialize the moving averages.
-    if self.t == 1:
-      for param in params_with_grad:
-        self.exp_avgs.append(torch.zeros_like(param, memory_format=torch.preserve_format))
-        self.exp_avg_sqs.append(torch.zeros_like(param, memory_format=torch.preserve_format))
-    # Optimize, following torch's numerical ordering.
-    for i, param in enumerate(params_with_grad):
-      lr = self.param_groups[0]['lr']
-      beta_1, beta_2 = self.param_groups[0]['betas']
-      eps = self.param_groups[0]['eps']
-      grad = param.grad
-      exp_avg = self.exp_avgs[i]
-      exp_avg_sq = self.exp_avg_sqs[i]
-      exp_avg *= beta_1
-      exp_avg += (1-beta_1)*grad
-      exp_avg_sq *= beta_2
-      exp_avg_sq += (1-beta_2)*grad**2
-      bias_corr_1 = 1-beta_1**self.t
-      bias_corr_2 = 1-beta_2**self.t
-      denom = exp_avg_sq.sqrt()/(-bias_corr_2**.5*lr/bias_corr_1)-eps*lr/bias_corr_1
-      param.data += exp_avg/denom
+
+    for group in self.param_groups:
+      for p in group['params']:
+        # The trainable tensors are the ones with gradients that are not `None`
+        # after the backward pass.
+        if p.grad is not None:
+          state = self.state[p]
+
+          # Initialization of Adam's variables for this tensor.
+          if len(state) == 0:
+            state['step'] = 0
+            state['exp_avg'] = torch.zeros_like(p, memory_format=torch.preserve_format)
+            state['exp_avg_sq'] = torch.zeros_like(p, memory_format=torch.preserve_format)
+
+          state['step'] += 1
+
+          lr, (beta_1, beta_2), eps = group['lr'], group['betas'], group['eps']
+          step, exp_avg, exp_avg_sq = state['step'], state['exp_avg'], state['exp_avg_sq']
+
+          # Now the actual optimization. The tensor operations here are inplace,
+          # making it not very readable, so equivalent readable versions are
+          # added as comments.
+          bias_corr_1 = 1-beta_1**step
+          bias_corr_2 = 1-beta_2**step
+          exp_avg.lerp_(p.grad.data, 1-beta_1)
+          # exp_avg = exp_avg+(1-beta_1)*(p.grad.data-exp_avg)
+          # exp_avg = exp_avg*beta_1+(1-beta_1)*p.grad.data
+          exp_avg_sq.mul_(beta_2).addcmul_(p.grad.data, p.grad.data, value=1-beta_2)
+          # exp_avg_sq = exp_avg_sq*beta_2+(1-beta_2)*p.grad.data**2
+          step_size_neg = -lr/bias_corr_1
+          denom = (exp_avg_sq.sqrt()/(bias_corr_2**.5*step_size_neg)).add_(eps/step_size_neg)
+          p.data.addcdiv_(exp_avg, denom)
+          # p.data += exp_avg/denom
 
 '''
 Training.
 '''
-
-N_EPOCHS = 2
-
 loss_f = torch.nn.CrossEntropyLoss()
 optim = Adam(model.parameters())
 for i_epoch in range(N_EPOCHS):
