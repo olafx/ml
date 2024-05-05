@@ -3,7 +3,6 @@ An autograd engine. Based on https://github.com/karpathy/micrograd.
 '''
 
 import numpy as np
-from uuid import uuid4
 import unittest
 
 class Node:
@@ -11,7 +10,7 @@ class Node:
   def __init__(self, value, label=None, children=set(), operation=None):
     self.value = value
     self.children = children
-    self.label = label if label else str(uuid4())
+    self.label = label if label else ''
     self.operation = operation
     # Before a `Node` is connected to the loss `Node`, the derivative of the
     # loss with respect to such a `Node` is 0. It is only when the loss `Node`

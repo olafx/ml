@@ -6,12 +6,14 @@ http://yann.lecun.com/exdb/mnist/
 '''
 
 import torch
+import torch.nn.functional as F
+from torch import nn
 import torchvision
 
 PREPROCESS_NORMALIZE = True
 BATCH_SIZE_TRAINING = 64
 BATCH_SIZE_TESTING = 512
-N_EPOCHS = 2
+N_EPOCHS = 4
 
 MODEL_LSTM_HIDDEN_SIZE = 32
 MODEL_DENSE_SIZE = 32
@@ -34,20 +36,19 @@ class Model(torch.nn.Module):
 
   def __init__(self, lstm_hidden_size, dense_size, dropout_1_prob, dropout_2_prob):
     super(Model, self).__init__()
-    self.LSTM_hor = torch.nn.LSTM(input_size=28, hidden_size=lstm_hidden_size, batch_first=True)
-    self.LSTM_ver = torch.nn.LSTM(input_size=28, hidden_size=lstm_hidden_size, batch_first=True)
-    self.batchnorm_1 = torch.nn.BatchNorm1d(2*lstm_hidden_size)
-    self.dropout_1 = torch.nn.Dropout(dropout_1_prob)
-    self.dropout_2 = torch.nn.Dropout(dropout_2_prob)
-    self.fc_1 = torch.nn.Linear(2*lstm_hidden_size, dense_size)
-    self.fc_2 = torch.nn.Linear(dense_size, 10)
+    self.LSTM_hor = nn.LSTM(input_size=28, hidden_size=lstm_hidden_size, batch_first=True)
+    self.LSTM_ver = nn.LSTM(input_size=28, hidden_size=lstm_hidden_size, batch_first=True)
+    self.batchnorm_1 = nn.BatchNorm1d(2*lstm_hidden_size)
+    self.dropout_1 = nn.Dropout(dropout_1_prob)
+    self.dropout_2 = nn.Dropout(dropout_2_prob)
+    self.fc_1 = nn.Linear(2*lstm_hidden_size, dense_size)
+    self.fc_2 = nn.Linear(dense_size, 10)
 
   def forward(self, x):
     # Making an orthgonal copy.
     # (...,28,28) -> (...,28,28), (...,28,28)
     x_hor = x
-    x_ver = torch.transpose(x_hor, dim0=1, dim1=2)
-    x_ver = x_hor
+    x_ver = torch.einsum('...ij->...ji', x)
     # (...,28,28) -> (...,28,lstm_hidden_size)
     # (...,28,28) -> (...,28,lstm_hidden_size)
     x_hor, h_hor = self.LSTM_hor(x_hor)
@@ -62,11 +63,11 @@ class Model(torch.nn.Module):
     x = self.dropout_1(x)
     # (...,2*lstm_hidden_size) -> (...,dense_size)
     x = self.fc_1(x)
-    x = torch.nn.functional.gelu(x)
+    x = F.gelu(x)
     x = self.dropout_2(x)
     # (...,dense_size) -> (...,10)
     x = self.fc_2(x)
-    x = torch.nn.functional.log_softmax(x, dim=1)
+    x = F.log_softmax(x, dim=1)
     return x
 
 model = Model(MODEL_LSTM_HIDDEN_SIZE, MODEL_DENSE_SIZE, MODEL_DROPOUT_1_PROB, MODEL_DROPOUT_2_PROB)
@@ -105,25 +106,25 @@ class Adam(torch.optim.Optimizer):
           # added as comments.
           bias_corr_1 = 1-beta_1**step
           bias_corr_2 = 1-beta_2**step
-          exp_avg.lerp_(p.grad.data, 1-beta_1)
+          # exp_avg.lerp_(p.grad.data, 1-beta_1)
           # exp_avg = exp_avg+(1-beta_1)*(p.grad.data-exp_avg)
-          # exp_avg = exp_avg*beta_1+(1-beta_1)*p.grad.data
-          exp_avg_sq.mul_(beta_2).addcmul_(p.grad.data, p.grad.data, value=1-beta_2)
-          # exp_avg_sq = exp_avg_sq*beta_2+(1-beta_2)*p.grad.data**2
+          exp_avg = exp_avg*beta_1+(1-beta_1)*p.grad.data
+          # exp_avg_sq.mul_(beta_2).addcmul_(p.grad.data, p.grad.data, value=1-beta_2)
+          exp_avg_sq = exp_avg_sq*beta_2+(1-beta_2)*p.grad.data**2
           step_size_neg = -lr/bias_corr_1
           denom = (exp_avg_sq.sqrt()/(bias_corr_2**.5*step_size_neg)).add_(eps/step_size_neg)
-          p.data.addcdiv_(exp_avg, denom)
-          # p.data += exp_avg/denom
+          # p.data.addcdiv_(exp_avg, denom)
+          p.data += exp_avg/denom
 
 '''
 Training.
 '''
-loss_f = torch.nn.CrossEntropyLoss()
+loss_f = nn.CrossEntropyLoss()
 optim = Adam(model.parameters())
 for i_epoch in range(N_EPOCHS):
   for i_batch, (images, labels) in enumerate(loader_train):
     # (...,1,28,28) -> (...,28,28)
-    images = images.reshape(-1, 28, 28)
+    images = torch.einsum('...ijk->...jk', images)
     out = model(images)
     loss = loss_f(out, labels)
     optim.zero_grad()
@@ -142,7 +143,7 @@ with torch.no_grad():
   total = len(loader_test.dataset)
   for images, labels in loader_test:
     # (...,1,28,28) -> (...,28,28)
-    images = images.reshape(-1, 28, 28)
+    images = torch.einsum('...ijk->...jk', images)
     out = model(images)
     pred = out.argmax(dim=1, keepdim=True)
     correct += pred.eq(labels.view_as(pred)).sum().item()
